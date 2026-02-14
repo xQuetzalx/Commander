@@ -1,0 +1,54 @@
+{
+“name”: “Commander Arena - MTG”,
+“short_name”: “Commander”,
+“description”: “Juega Magic: The Gathering Commander online con tus amigos”,
+“start_url”: “/”,
+“display”: “standalone”,
+“background_color”: “#0f172a”,
+“theme_color”: “#5b21b6”,
+“orientation”: “portrait”,
+“icons”: [
+{
+“src”: “data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect width='192' height='192' fill='%235b21b6' rx='48'/><path d='M96 60l25 50h50l-40 30 15 50-50-30-50 30 15-50-40-30h50z' fill='%23fbbf24'/></svg>”,
+“sizes”: “192x192”,
+“type”: “image/svg+xml”,
+“purpose”: “any maskable”
+},
+{
+“src”: “data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'><rect width='512' height='512' fill='%235b21b6' rx='128'/><path d='M256 150l50 100h100l-80 60 30 100-100-60-100 60 30-100-80-60h100z' fill='%23fbbf24'/></svg>”,
+“sizes”: “512x512”,
+“type”: “image/svg+xml”,
+“purpose”: “any maskable”
+}
+],
+“categories”: [“games”, “entertainment”],
+“screenshots”: [
+{
+“src”: “data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1080 1920'><rect width='1080' height='1920' fill='%230f172a'/></svg>”,
+“sizes”: “1080x1920”,
+“type”: “image/svg+xml”
+}
+],
+“shortcuts”: [
+{
+“name”: “Mis Mazos”,
+“url”: “/decks”,
+“description”: “Ver y gestionar tus mazos”
+},
+{
+“name”: “Unirse a Partida”,
+“url”: “/join”,
+“description”: “Unirse a una partida existente”
+}
+],
+“share_target”: {
+“action”: “/share”,
+“method”: “POST”,
+“enctype”: “multipart/form-data”,
+“params”: {
+“title”: “title”,
+“text”: “text”,
+“url”: “url”
+}
+}
+}
