@@ -2,7 +2,7 @@ const CACHE_NAME = 'commander-arena-v1';
 const urlsToCache = [
   '/Commander/',
   '/Commander/index.html',
-  '/Commander/mtg-commander-improved.jsx',
+  '/Commander/mtg-commander-improved.js',
   '/Commander/manifest.json',
   'https://cdn.tailwindcss.com',
   'https://esm.sh/react@18.2.0',
