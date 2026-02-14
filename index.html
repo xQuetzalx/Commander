@@ -14,25 +14,28 @@
     ::-webkit-scrollbar { width: 8px; }
     ::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.1); }
     ::-webkit-scrollbar-thumb { background: rgba(139, 92, 246, 0.3); border-radius: 4px; }
+    .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+    @media (max-width: 640px) { .card-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); } }
   </style>
 </head>
 <body>
   <div id="root"></div>
   
   <script type="module">
-    import React, { useState, useEffect } from 'https://esm.sh/react@18.2.0';
+    import React, { useState, useEffect, useRef } from 'https://esm.sh/react@18.2.0';
     import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
-    import { Search, Plus, Trash2, Users, Play, Home, BookOpen, Download, X, Crown, Info, ChevronLeft, MoreVertical, Heart, Swords, Skull, MessageCircle, Send, Copy } from 'https://esm.sh/lucide-react@0.263.1';
+    import { Search, Plus, Trash2, Users, Play, Home, BookOpen, Download, X, Crown, Info, ChevronLeft, MoreVertical, Heart, Swords, Skull, MessageCircle, Send, Copy, Grid3x3, Sparkles, Loader2, Filter } from 'https://esm.sh/lucide-react@0.263.1';
 
-    // Mock storage para cuando window.storage no esté disponible
     const storage = window.storage || {
-      async get(key) {
-        const item = localStorage.getItem(key);
-        return item ? { key, value: item } : null;
+      async get(key, shared = false) {
+        const storageKey = shared ? 'shared-' + key : key;
+        const item = localStorage.getItem(storageKey);
+        return item ? { key, value: item, shared } : null;
       },
-      async set(key, value) {
-        localStorage.setItem(key, value);
-        return { key, value };
+      async set(key, value, shared = false) {
+        const storageKey = shared ? 'shared-' + key : key;
+        localStorage.setItem(storageKey, value);
+        return { key, value, shared };
       }
     };
 
@@ -44,7 +47,19 @@
       const [showDeckDetail, setShowDeckDetail] = useState(null);
       const [importText, setImportText] = useState('');
       const [importError, setImportError] = useState('');
-      const [loading, setLoading] = useState(false);
+      
+      // Cards explorer
+      const [cards, setCards] = useState([]);
+      const [searchCard, setSearchCard] = useState('');
+      const [loadingCards, setLoadingCards] = useState(false);
+      const [selectedCard, setSelectedCard] = useState(null);
+      const [page, setPage] = useState(1);
+      
+      // Multiplayer
+      const [currentGame, setCurrentGame] = useState(null);
+      const [showChat, setShowChat] = useState(false);
+      const [chatMessage, setChatMessage] = useState('');
+      const chatEndRef = useRef(null);
 
       useEffect(() => {
         loadDecks();
@@ -75,6 +90,28 @@
         setPlayerName(name);
       };
 
+      const searchCards = async (query = '', pageNum = 1) => {
+        setLoadingCards(true);
+        try {
+          const q = query || 'format:commander';
+          const response = await fetch(`https://api.scryfall.com/cards/search?q=${encodeURIComponent(q)}&order=edhrec&page=${pageNum}`);
+          const data = await response.json();
+          if (data.data) {
+            setCards(pageNum === 1 ? data.data : [...cards, ...data.data]);
+            setPage(pageNum);
+          }
+        } catch (e) {
+          console.error('Error buscando cartas:', e);
+        }
+        setLoadingCards(false);
+      };
+
+      useEffect(() => {
+        if (currentView === 'cards') {
+          searchCards(searchCard, 1);
+        }
+      }, [currentView]);
+
       const parseMoxfieldDeck = (text) => {
         setImportError('');
         if (!text.trim()) {
@@ -85,9 +122,17 @@
         const lines = text.split('\n').filter(line => line.trim());
         const cards = [];
         let deckName = 'Mazo Importado ' + new Date().toLocaleDateString();
+        let commander = null;
 
         for (let line of lines) {
-          if (line.match(/^(Commander|Deck|Companion|Sideboard):/i)) continue;
+          if (line.match(/^(Commander|Deck):/i)) {
+            const match = line.match(/^(Commander|Deck):\s*(.+)/i);
+            if (match) {
+              if (match[1].toLowerCase() === 'deck') deckName = match[2].trim();
+              if (match[1].toLowerCase() === 'commander') commander = match[2].trim();
+            }
+            continue;
+          }
           if (!line.trim() || line.startsWith('//') || line.startsWith('#')) continue;
 
           let match = line.match(/^(\d+)x?\s+(.+?)(?:\s+\([A-Z0-9]+\))?(?:\s+\d+)?$/);
@@ -99,7 +144,10 @@
           if (match) {
             const quantity = parseInt(match[1]);
             let cardName = match[2].trim().replace(/\s+\([A-Z0-9]+\)\s*\d*$/, '').trim();
-            if (cardName) cards.push({ name: cardName, quantity });
+            if (cardName) {
+              if (!commander && cards.length === 0) commander = cardName;
+              cards.push({ name: cardName, quantity });
+            }
           }
         }
 
@@ -110,6 +158,7 @@
 
         return {
           name: deckName,
+          commander,
           cards,
           createdAt: new Date().toISOString(),
           totalCards: cards.reduce((sum, c) => sum + c.quantity, 0)
@@ -133,11 +182,153 @@
         }
       };
 
-      const startGame = (deck) => {
-        alert('Funcionalidad de juego próximamente. Por ahora puedes:\n\n• Importar mazos desde Moxfield\n• Ver tus mazos guardados\n• Gestionar tu colección');
+      const startGame = async (deck) => {
+        if (!playerName.trim()) {
+          alert('Introduce tu nombre primero');
+          return;
+        }
+
+        const gameId = 'game-' + Date.now();
+        const game = {
+          id: gameId,
+          players: [{
+            id: Date.now().toString(),
+            name: playerName,
+            life: 40,
+            commanderDamage: {},
+            poison: 0,
+            deck: deck,
+            color: '#8b5cf6'
+          }],
+          messages: [],
+          turn: 1,
+          createdAt: new Date().toISOString()
+        };
+
+        await storage.set(gameId, JSON.stringify(game), true);
+        setCurrentGame(game);
+        setCurrentView('game');
       };
 
-      // Vista Home
+      const joinGame = async () => {
+        const gameId = prompt('Introduce el ID de la partida:');
+        if (!gameId) return;
+
+        if (!playerName.trim()) {
+          alert('Introduce tu nombre primero');
+          return;
+        }
+
+        try {
+          const result = await storage.get(gameId, true);
+          if (result?.value) {
+            const game = JSON.parse(result.value);
+            
+            const existingPlayer = game.players.find(p => p.name === playerName);
+            if (!existingPlayer) {
+              const colors = ['#8b5cf6', '#ec4899', '#10b981', '#f59e0b', '#3b82f6', '#ef4444'];
+              const usedColors = game.players.map(p => p.color);
+              const availableColor = colors.find(c => !usedColors.includes(c)) || colors[0];
+              
+              game.players.push({
+                id: Date.now().toString(),
+                name: playerName,
+                life: 40,
+                commanderDamage: {},
+                poison: 0,
+                deck: null,
+                color: availableColor
+              });
+              
+              await storage.set(gameId, JSON.stringify(game), true);
+            }
+            
+            setCurrentGame(game);
+            setCurrentView('game');
+          } else {
+            alert('No se encontró la partida');
+          }
+        } catch (e) {
+          alert('Error al unirse: ' + e.message);
+        }
+      };
+
+      const updateGame = async (updatedGame) => {
+        await storage.set(updatedGame.id, JSON.stringify(updatedGame), true);
+        setCurrentGame(updatedGame);
+      };
+
+      const updatePlayerLife = (playerId, amount) => {
+        updateGame({
+          ...currentGame,
+          players: currentGame.players.map(p =>
+            p.id === playerId ? { ...p, life: Math.max(0, p.life + amount) } : p
+          )
+        });
+      };
+
+      const updateCommanderDamage = (playerId, fromPlayerId, amount) => {
+        updateGame({
+          ...currentGame,
+          players: currentGame.players.map(p => {
+            if (p.id === playerId) {
+              const current = p.commanderDamage[fromPlayerId] || 0;
+              return {
+                ...p,
+                commanderDamage: { ...p.commanderDamage, [fromPlayerId]: Math.max(0, current + amount) }
+              };
+            }
+            return p;
+          })
+        });
+      };
+
+      const updatePoison = (playerId, amount) => {
+        updateGame({
+          ...currentGame,
+          players: currentGame.players.map(p =>
+            p.id === playerId ? { ...p, poison: Math.max(0, Math.min(10, p.poison + amount)) } : p
+          )
+        });
+      };
+
+      const sendMessage = () => {
+        if (!chatMessage.trim()) return;
+        updateGame({
+          ...currentGame,
+          messages: [...currentGame.messages, {
+            id: Date.now().toString(),
+            player: playerName,
+            text: chatMessage,
+            timestamp: new Date().toISOString()
+          }]
+        });
+        setChatMessage('');
+      };
+
+      const copyGameId = () => {
+        navigator.clipboard.writeText(currentGame.id);
+        alert('ID copiado: ' + currentGame.id);
+      };
+
+      useEffect(() => {
+        if (!currentGame) return;
+        const interval = setInterval(async () => {
+          try {
+            const result = await storage.get(currentGame.id, true);
+            if (result?.value) setCurrentGame(JSON.parse(result.value));
+          } catch (e) {}
+        }, 3000);
+        return () => clearInterval(interval);
+      }, [currentGame?.id]);
+
+      useEffect(() => {
+        if (showChat && chatEndRef.current) {
+          chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+        }
+      }, [currentGame?.messages, showChat]);
+
+      // VISTA HOME
       if (currentView === 'home') {
         return React.createElement('div', { className: "min-h-screen bg-gradient-to-br from-slate-950 via-violet-950 to-slate-950" },
           React.createElement('div', { className: "relative overflow-hidden" },
@@ -151,7 +342,7 @@
                     style: { fontFamily: 'Palatino, serif' }
                   }, 'Commander Arena')
                 ),
-                React.createElement('p', { className: "text-violet-300/70 text-sm ml-13" }, 'Tu mesa digital de Magic: The Gathering')
+                React.createElement('p', { className: "text-violet-300/70 text-sm ml-13" }, 'Explora cartas y juega online')
               )
             )
           ),
@@ -169,33 +360,56 @@
                 className: "w-full bg-slate-900/50 border border-violet-500/30 rounded-xl px-4 py-3 text-white placeholder-violet-400/40 focus:outline-none focus:border-violet-400 transition-all"
               })
             ),
-            React.createElement('button', {
-              onClick: () => setCurrentView('decks'),
-              className: "w-full group backdrop-blur-xl bg-gradient-to-r from-violet-600/20 to-fuchsia-600/20 hover:from-violet-600/30 hover:to-fuchsia-600/30 border border-violet-500/30 rounded-2xl p-6 transition-all shadow-xl"
-            },
-              React.createElement('div', { className: "flex items-center justify-between" },
-                React.createElement('div', { className: "flex items-center gap-4" },
-                  React.createElement('div', { className: "p-3 bg-violet-500/20 rounded-xl" },
-                    React.createElement(BookOpen, { className: "w-7 h-7 text-violet-300" })
+            React.createElement('div', { className: "grid gap-4" },
+              React.createElement('button', {
+                onClick: () => setCurrentView('cards'),
+                className: "group backdrop-blur-xl bg-gradient-to-r from-pink-600/20 to-purple-600/20 hover:from-pink-600/30 hover:to-purple-600/30 border border-pink-500/30 rounded-2xl p-6 transition-all shadow-xl"
+              },
+                React.createElement('div', { className: "flex items-center justify-between" },
+                  React.createElement('div', { className: "flex items-center gap-4" },
+                    React.createElement('div', { className: "p-3 bg-pink-500/20 rounded-xl" },
+                      React.createElement(Sparkles, { className: "w-7 h-7 text-pink-300" })
+                    ),
+                    React.createElement('div', { className: "text-left" },
+                      React.createElement('h3', { className: "text-xl font-bold text-white mb-1" }, 'Explorar Cartas'),
+                      React.createElement('p', { className: "text-pink-300/70 text-sm" }, 'Ver todas las cartas de Magic')
+                    )
                   ),
-                  React.createElement('div', { className: "text-left" },
-                    React.createElement('h3', { className: "text-xl font-bold text-white mb-1" }, 'Mis Mazos'),
-                    React.createElement('p', { className: "text-violet-300/70 text-sm" }, `${decks.length} mazos guardados`)
-                  )
-                ),
-                React.createElement(ChevronLeft, { className: "w-6 h-6 text-violet-300/50 rotate-180 group-hover:translate-x-1 transition-transform" })
-              )
-            ),
-            React.createElement('div', { className: "backdrop-blur-xl bg-violet-500/5 border border-violet-500/20 rounded-2xl p-6" },
-              React.createElement('div', { className: "flex items-start gap-3" },
-                React.createElement(Info, { className: "w-5 h-5 text-violet-400 mt-0.5" }),
-                React.createElement('div', null,
-                  React.createElement('h3', { className: "text-violet-200 font-semibold mb-2" }, 'Cómo Empezar'),
-                  React.createElement('ul', { className: "space-y-2 text-violet-300/70 text-sm" },
-                    React.createElement('li', null, '1. Importa tus mazos desde Moxfield'),
-                    React.createElement('li', null, '2. Gestiona tu colección'),
-                    React.createElement('li', null, '3. Juego multijugador próximamente')
-                  )
+                  React.createElement(ChevronLeft, { className: "w-6 h-6 text-pink-300/50 rotate-180 group-hover:translate-x-1 transition-transform" })
+                )
+              ),
+              React.createElement('button', {
+                onClick: () => setCurrentView('decks'),
+                className: "group backdrop-blur-xl bg-gradient-to-r from-violet-600/20 to-fuchsia-600/20 hover:from-violet-600/30 hover:to-fuchsia-600/30 border border-violet-500/30 rounded-2xl p-6 transition-all shadow-xl"
+              },
+                React.createElement('div', { className: "flex items-center justify-between" },
+                  React.createElement('div', { className: "flex items-center gap-4" },
+                    React.createElement('div', { className: "p-3 bg-violet-500/20 rounded-xl" },
+                      React.createElement(BookOpen, { className: "w-7 h-7 text-violet-300" })
+                    ),
+                    React.createElement('div', { className: "text-left" },
+                      React.createElement('h3', { className: "text-xl font-bold text-white mb-1" }, 'Mis Mazos'),
+                      React.createElement('p', { className: "text-violet-300/70 text-sm" }, `${decks.length} mazos guardados`)
+                    )
+                  ),
+                  React.createElement(ChevronLeft, { className: "w-6 h-6 text-violet-300/50 rotate-180 group-hover:translate-x-1 transition-transform" })
+                )
+              ),
+              React.createElement('button', {
+                onClick: joinGame,
+                className: "group backdrop-blur-xl bg-gradient-to-r from-blue-600/20 to-cyan-600/20 hover:from-blue-600/30 hover:to-cyan-600/30 border border-blue-500/30 rounded-2xl p-6 transition-all shadow-xl"
+              },
+                React.createElement('div', { className: "flex items-center justify-between" },
+                  React.createElement('div', { className: "flex items-center gap-4" },
+                    React.createElement('div', { className: "p-3 bg-blue-500/20 rounded-xl" },
+                      React.createElement(Users, { className: "w-7 h-7 text-blue-300" })
+                    ),
+                    React.createElement('div', { className: "text-left" },
+                      React.createElement('h3', { className: "text-xl font-bold text-white mb-1" }, 'Unirse a Partida'),
+                      React.createElement('p', { className: "text-blue-300/70 text-sm" }, 'Juega Commander online')
+                    )
+                  ),
+                  React.createElement(ChevronLeft, { className: "w-6 h-6 text-blue-300/50 rotate-180 group-hover:translate-x-1 transition-transform" })
                 )
               )
             )
@@ -203,7 +417,69 @@
         );
       }
 
-      // Vista Decks
+      // VISTA EXPLORADOR DE CARTAS
+      if (currentView === 'cards') {
+        return React.createElement('div', { className: "min-h-screen bg-gradient-to-br from-slate-950 via-violet-950 to-slate-950 pb-6" },
+          React.createElement('div', { className: "sticky top-0 z-20 backdrop-blur-xl bg-black/40 border-b border-violet-500/20" },
+            React.createElement('div', { className: "px-4 py-4 flex items-center gap-3" },
+              React.createElement('button', {
+                onClick: () => setCurrentView('home'),
+                className: "text-violet-300 hover:text-violet-200"
+              }, React.createElement(ChevronLeft, { className: "w-6 h-6" })),
+              React.createElement('div', { className: "flex-1 relative" },
+                React.createElement(Search, { className: "absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-violet-400" }),
+                React.createElement('input', {
+                  type: "text",
+                  value: searchCard,
+                  onChange: (e) => setSearchCard(e.target.value),
+                  onKeyPress: (e) => e.key === 'Enter' && searchCards(searchCard, 1),
+                  placeholder: "Buscar cartas...",
+                  className: "w-full pl-10 pr-4 py-2 bg-slate-900/50 border border-violet-500/30 rounded-xl text-white placeholder-violet-400/40 focus:outline-none text-sm"
+                })
+              )
+            )
+          ),
+          React.createElement('div', { className: "px-4 py-4" },
+            loadingCards && page === 1 ?
+              React.createElement('div', { className: "flex justify-center py-12" },
+                React.createElement(Loader2, { className: "w-8 h-8 animate-spin text-violet-400" })
+              ) :
+              React.createElement('div', { className: "card-grid" },
+                cards.map(card =>
+                  React.createElement('div', {
+                    key: card.id,
+                    onClick: () => setSelectedCard(card),
+                    className: "bg-slate-800/30 rounded-lg overflow-hidden cursor-pointer hover:scale-105 transition-transform shadow-lg"
+                  },
+                    React.createElement('img', {
+                      src: card.image_uris?.normal || card.card_faces?.[0]?.image_uris?.normal || 'https://via.placeholder.com/244x340',
+                      alt: card.name,
+                      className: "w-full h-auto"
+                    })
+                  )
+                )
+              ),
+            cards.length > 0 && !loadingCards &&
+              React.createElement('button', {
+                onClick: () => searchCards(searchCard, page + 1),
+                className: "mt-6 w-full bg-violet-600 hover:bg-violet-500 text-white rounded-xl px-4 py-3 font-semibold"
+              }, 'Cargar más cartas')
+          ),
+          selectedCard && React.createElement('div', {
+            onClick: () => setSelectedCard(null),
+            className: "fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 z-50"
+          },
+            React.createElement('img', {
+              src: selectedCard.image_uris?.large || selectedCard.image_uris?.normal || selectedCard.card_faces?.[0]?.image_uris?.large,
+              alt: selectedCard.name,
+              className: "max-w-full max-h-[90vh] rounded-xl shadow-2xl",
+              onClick: (e) => e.stopPropagation()
+            })
+          )
+        );
+      }
+
+      // VISTA MAZOS
       if (currentView === 'decks') {
         return React.createElement('div', { className: "min-h-screen bg-gradient-to-br from-slate-950 via-violet-950 to-slate-950" },
           React.createElement('div', { className: "sticky top-0 z-20 backdrop-blur-xl bg-black/40 border-b border-violet-500/20" },
@@ -239,6 +515,10 @@
                   React.createElement('div', { className: "flex justify-between mb-4" },
                     React.createElement('div', null,
                       React.createElement('h3', { className: "text-xl font-bold text-white mb-2" }, deck.name),
+                      deck.commander && React.createElement('div', { className: "flex items-center gap-2 mb-2" },
+                        React.createElement(Crown, { className: "w-4 h-4 text-amber-400" }),
+                        React.createElement('span', { className: "text-violet-300 text-sm" }, deck.commander)
+                      ),
                       React.createElement('p', { className: "text-violet-400/60 text-sm" }, `${deck.totalCards} cartas`)
                     ),
                     React.createElement('button', {
@@ -251,7 +531,7 @@
                     className: "w-full bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white rounded-xl px-4 py-3 flex items-center justify-center gap-2 font-semibold"
                   },
                     React.createElement(Play, { className: "w-5 h-5" }),
-                    'Ver Detalles'
+                    'Iniciar Partida'
                   )
                 )
               )
@@ -270,11 +550,11 @@
                 }, React.createElement(X, { className: "w-6 h-6" }))
               ),
               React.createElement('div', { className: "p-6" },
-                React.createElement('p', { className: "text-violet-300 text-sm mb-4" }, 'Pega el texto de Moxfield:'),
+                React.createElement('p', { className: "text-violet-300 text-sm mb-4" }, 'Pega el texto de tu mazo desde Moxfield:'),
                 React.createElement('textarea', {
                   value: importText,
                   onChange: (e) => setImportText(e.target.value),
-                  placeholder: "1 Sol Ring\n1 Command Tower\n...",
+                  placeholder: "Commander:\nAtraxa, Praetors' Voice\n\n1 Sol Ring\n1 Command Tower\n...",
                   className: "w-full h-80 bg-slate-800/50 border border-violet-500/30 rounded-xl px-4 py-3 text-white placeholder-violet-400/40 focus:outline-none resize-none font-mono text-sm"
                 }),
                 importError && React.createElement('div', { className: "mt-4 bg-red-500/10 border border-red-500/30 rounded-lg p-4" },
@@ -310,6 +590,10 @@
                 }, React.createElement(X, { className: "w-6 h-6" }))
               ),
               React.createElement('div', { className: "p-6 flex-1 overflow-y-auto" },
+                showDeckDetail.commander && React.createElement('div', { className: "flex items-center gap-2 mb-4" },
+                  React.createElement(Crown, { className: "w-5 h-5 text-amber-400" }),
+                  React.createElement('span', { className: "text-violet-200 font-semibold" }, showDeckDetail.commander)
+                ),
                 React.createElement('p', { className: "text-violet-400/60 text-sm mb-6" }, `${showDeckDetail.totalCards} cartas totales`),
                 React.createElement('div', { className: "space-y-2" },
                   showDeckDetail.cards.map((card, i) =>
@@ -338,6 +622,195 @@
                 )
               )
             )
+          )
+        );
+      }
+
+      // VISTA JUEGO MULTIJUGADOR
+      if (currentView === 'game' && currentGame) {
+        const currentPlayer = currentGame.players.find(p => p.name === playerName);
+        
+        return React.createElement('div', { className: "min-h-screen bg-gradient-to-br from-slate-950 via-violet-950 to-slate-950 pb-20" },
+          React.createElement('div', { className: "sticky top-0 z-20 backdrop-blur-xl bg-black/40 border-b border-violet-500/20" },
+            React.createElement('div', { className: "px-4 py-3 flex items-center justify-between" },
+              React.createElement('div', { className: "flex items-center gap-3" },
+                React.createElement('button', {
+                  onClick: () => {
+                    if (confirm('¿Salir de la partida?')) {
+                      setCurrentView('home');
+                      setCurrentGame(null);
+                    }
+                  },
+                  className: "text-violet-300 hover:text-violet-200"
+                }, React.createElement(ChevronLeft, { className: "w-6 h-6" })),
+                React.createElement('div', null,
+                  React.createElement('h2', { className: "text-lg font-bold text-white" }, 'Partida'),
+                  React.createElement('p', { className: "text-xs text-violet-400" }, `Turno ${currentGame.turn}`)
+                )
+              ),
+              React.createElement('div', { className: "flex gap-2" },
+                React.createElement('button', {
+                  onClick: copyGameId,
+                  className: "p-2 text-violet-400 hover:bg-violet-500/10 rounded-lg"
+                }, React.createElement(Copy, { className: "w-5 h-5" })),
+                React.createElement('button', {
+                  onClick: () => setShowChat(!showChat),
+                  className: "relative p-2 text-violet-400 hover:bg-violet-500/10 rounded-lg"
+                },
+                  React.createElement(MessageCircle, { className: "w-5 h-5" }),
+                  currentGame.messages.length > 0 && React.createElement('span', { className: "absolute -top-1 -right-1 w-3 h-3 bg-fuchsia-500 rounded-full" })
+                )
+              )
+            )
+          ),
+          React.createElement('div', { className: "p-4 grid grid-cols-1 md:grid-cols-2 gap-4" },
+            currentGame.players.map(player =>
+              React.createElement('div', {
+                key: player.id,
+                className: "backdrop-blur-xl bg-white/5 border rounded-2xl p-5",
+                style: {
+                  borderColor: player.id === currentPlayer?.id ? player.color : 'rgba(139, 92, 246, 0.2)',
+                  boxShadow: player.id === currentPlayer?.id ? `0 0 20px ${player.color}40` : 'none'
+                }
+              },
+                React.createElement('div', { className: "flex items-center justify-between mb-4" },
+                  React.createElement('div', { className: "flex items-center gap-3" },
+                    React.createElement('div', { className: "w-3 h-3 rounded-full", style: { backgroundColor: player.color } }),
+                    React.createElement('div', null,
+                      React.createElement('h3', { className: "text-lg font-bold text-white" }, player.name),
+                      player.deck?.commander && React.createElement('p', { className: "text-xs text-violet-400 flex items-center gap-1" },
+                        React.createElement(Crown, { className: "w-3 h-3 text-amber-400" }),
+                        player.deck.commander
+                      )
+                    )
+                  ),
+                  player.id === currentPlayer?.id && React.createElement('span', { className: "bg-violet-600/30 border border-violet-500/50 text-violet-200 text-xs px-3 py-1 rounded-full font-semibold" }, 'Tú')
+                ),
+                React.createElement('div', { className: "mb-4" },
+                  React.createElement('div', { className: "flex items-center justify-between mb-3" },
+                    React.createElement('div', { className: "flex items-center gap-2" },
+                      React.createElement(Heart, { className: "w-5 h-5 text-red-400" }),
+                      React.createElement('span', { className: "text-sm text-violet-300 font-semibold" }, 'Vida')
+                    ),
+                    React.createElement('span', {
+                      className: "text-4xl font-bold tabular-nums",
+                      style: { color: player.life > 20 ? '#10b981' : player.life > 10 ? '#f59e0b' : '#ef4444' }
+                    }, player.life)
+                  ),
+                  player.id === currentPlayer?.id && React.createElement('div', { className: "grid grid-cols-4 gap-2" },
+                    [-10, -1, 1, 10].map(amount =>
+                      React.createElement('button', {
+                        key: amount,
+                        onClick: () => updatePlayerLife(player.id, amount),
+                        className: `${amount < 0 ? 'bg-red-500/20 border-red-500/30 text-red-300' : 'bg-green-500/20 border-green-500/30 text-green-300'} border rounded-lg py-2 text-sm font-semibold`
+                      }, amount > 0 ? `+${amount}` : amount)
+                    )
+                  )
+                ),
+                currentGame.players.length > 1 && React.createElement('div', { className: "mb-4" },
+                  React.createElement('div', { className: "flex items-center gap-2 mb-2" },
+                    React.createElement(Swords, { className: "w-4 h-4 text-orange-400" }),
+                    React.createElement('span', { className: "text-xs text-violet-300 font-semibold" }, 'Daño Comandante')
+                  ),
+                  React.createElement('div', { className: "space-y-2" },
+                    currentGame.players.filter(p => p.id !== player.id).map(opponent =>
+                      React.createElement('div', { key: opponent.id, className: "flex items-center justify-between text-sm bg-slate-800/30 rounded-lg px-3 py-2" },
+                        React.createElement('span', { className: "text-violet-400 flex items-center gap-2" },
+                          React.createElement('div', { className: "w-2 h-2 rounded-full", style: { backgroundColor: opponent.color } }),
+                          opponent.name
+                        ),
+                        React.createElement('div', { className: "flex items-center gap-2" },
+                          React.createElement('span', {
+                            className: "font-bold tabular-nums",
+                            style: { color: (player.commanderDamage[opponent.id] || 0) >= 15 ? '#ef4444' : '#a78bfa' }
+                          }, player.commanderDamage[opponent.id] || 0),
+                          player.id === currentPlayer?.id && React.createElement('div', { className: "flex gap-1" },
+                            [1, -1].map(amount =>
+                              React.createElement('button', {
+                                key: amount,
+                                onClick: () => updateCommanderDamage(player.id, opponent.id, amount),
+                                className: "w-7 h-7 bg-orange-500/20 border border-orange-500/30 text-orange-300 rounded text-xs font-bold"
+                              }, amount > 0 ? '+' : '-')
+                            )
+                          )
+                        )
+                      )
+                    )
+                  )
+                ),
+                React.createElement('div', { className: "flex items-center justify-between bg-slate-800/30 rounded-lg px-3 py-2" },
+                  React.createElement('div', { className: "flex items-center gap-2" },
+                    React.createElement(Skull, { className: "w-4 h-4 text-green-400" }),
+                    React.createElement('span', { className: "text-sm text-violet-300 font-semibold" }, 'Veneno')
+                  ),
+                  React.createElement('div', { className: "flex items-center gap-2" },
+                    React.createElement('span', {
+                      className: "text-lg font-bold tabular-nums",
+                      style: { color: player.poison >= 8 ? '#ef4444' : player.poison >= 5 ? '#f59e0b' : '#10b981' }
+                    }, player.poison),
+                    player.id === currentPlayer?.id && React.createElement('div', { className: "flex gap-1" },
+                      [1, -1].map(amount =>
+                        React.createElement('button', {
+                          key: amount,
+                          onClick: () => updatePoison(player.id, amount),
+                          className: "w-7 h-7 bg-green-500/20 border border-green-500/30 text-green-300 rounded text-xs font-bold"
+                        }, amount > 0 ? '+' : '-')
+                      )
+                    )
+                  )
+                )
+              )
+            )
+          ),
+          showChat && React.createElement('div', { className: "fixed bottom-20 left-0 right-0 mx-4 md:mx-auto md:max-w-2xl z-30" },
+            React.createElement('div', { className: "backdrop-blur-xl bg-slate-900/95 border border-violet-500/30 rounded-2xl shadow-2xl overflow-hidden" },
+              React.createElement('div', { className: "px-4 py-3 bg-violet-500/10 border-b border-violet-500/20 flex items-center justify-between" },
+                React.createElement('h3', { className: "text-white font-semibold" }, 'Chat'),
+                React.createElement('button', {
+                  onClick: () => setShowChat(false),
+                  className: "text-violet-400"
+                }, React.createElement(X, { className: "w-5 h-5" }))
+              ),
+              React.createElement('div', { className: "h-64 overflow-y-auto p-4 space-y-3" },
+                currentGame.messages.length === 0 ?
+                  React.createElement('p', { className: "text-violet-400/50 text-sm text-center py-8" }, 'No hay mensajes') :
+                  currentGame.messages.map(msg =>
+                    React.createElement('div', {
+                      key: msg.id,
+                      className: `flex flex-col gap-1 ${msg.player === playerName ? 'items-end' : 'items-start'}`
+                    },
+                      React.createElement('span', { className: "text-xs text-violet-400" }, msg.player),
+                      React.createElement('div', {
+                        className: `max-w-[80%] px-4 py-2 rounded-xl ${msg.player === playerName ? 'bg-violet-600 text-white' : 'bg-slate-800 text-violet-200'}`
+                      },
+                        React.createElement('p', { className: "text-sm" }, msg.text)
+                      )
+                    )
+                  ),
+                React.createElement('div', { ref: chatEndRef })
+              ),
+              React.createElement('div', { className: "p-4 bg-slate-800/50 border-t border-violet-500/20 flex gap-2" },
+                React.createElement('input', {
+                  type: "text",
+                  value: chatMessage,
+                  onChange: (e) => setChatMessage(e.target.value),
+                  onKeyPress: (e) => e.key === 'Enter' && sendMessage(),
+                  placeholder: "Mensaje...",
+                  className: "flex-1 bg-slate-900/50 border border-violet-500/30 rounded-xl px-4 py-2 text-white placeholder-violet-400/40 focus:outline-none text-sm"
+                }),
+                React.createElement('button', {
+                  onClick: sendMessage,
+                  className: "bg-violet-600 hover:bg-violet-500 text-white rounded-xl px-4 py-2"
+                }, React.createElement(Send, { className: "w-5 h-5" }))
+              )
+            )
+          ),
+          !showChat && React.createElement('button', {
+            onClick: () => setShowChat(true),
+            className: "fixed bottom-24 right-4 bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white p-4 rounded-full shadow-2xl z-20"
+          },
+            React.createElement(MessageCircle, { className: "w-6 h-6" }),
+            currentGame.messages.length > 0 && React.createElement('span', { className: "absolute -top-1 -right-1 bg-red-500 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center font-bold" }, currentGame.messages.length)
           )
         );
       }
